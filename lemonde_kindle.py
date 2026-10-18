@@ -265,19 +265,37 @@ def safe_filename(title: str) -> str:
 
 
 def send_to_kindle(path: str, title: str) -> None:
-    user = os.environ["SMTP_USER"]
+    user = os.environ["SMTP_USER"].strip()
+    # Le mot de passe d'application Google s'affiche par groupes de 4 : les espaces ne comptent pas.
+    password = re.sub(r"\s+", "", os.environ["SMTP_PASSWORD"])
     msg = EmailMessage()
     msg["From"] = user
-    msg["To"] = os.environ["KINDLE_EMAIL"]
+    msg["To"] = os.environ["KINDLE_EMAIL"].strip()
     msg["Subject"] = title
     msg.set_content("Article envoyé par lemonde_kindle.")
     with open(path, "rb") as fh:
         msg.add_attachment(fh.read(), maintype="application", subtype="epub+zip", filename=safe_filename(title))
     host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
     port = int(os.environ.get("SMTP_PORT", "465"))
-    with smtplib.SMTP_SSL(host, port, timeout=60) as smtp:
-        smtp.login(user, os.environ["SMTP_PASSWORD"])
-        smtp.send_message(msg)
+    try:
+        if port == 465:
+            smtp = smtplib.SMTP_SSL(host, port, timeout=60)
+        else:
+            smtp = smtplib.SMTP(host, port, timeout=60)
+            smtp.starttls()
+        with smtp:
+            smtp.login(user, password)
+            smtp.send_message(msg)
+    except smtplib.SMTPAuthenticationError as exc:
+        raise ArticleError(
+            f"Gmail refuse l'identification ({exc.smtp_code}). Vérifie SMTP_USER (adresse complète) "
+            "et SMTP_PASSWORD (mot de passe d'application à 16 lettres, pas ton mot de passe Gmail)."
+        ) from None
+    except (smtplib.SMTPException, OSError) as exc:
+        raise ArticleError(
+            f"Envoi du mail impossible ({type(exc).__name__}: {exc}). "
+            "Si le mot de passe est bon, essaie SMTP_PORT=587 dans le fichier de configuration."
+        ) from None
 
 
 def main() -> int:
