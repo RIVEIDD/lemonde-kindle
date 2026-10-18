@@ -1,0 +1,28 @@
+name: Envoyer sur Kindle
+
+on:
+  workflow_dispatch:
+    inputs:
+      texte:
+        description: "URL de l'article (ou texte partagé qui la contient)"
+        required: true
+
+jobs:
+  envoyer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Récupérer l'article et l'envoyer
+        run: python lemonde_kindle.py "$TEXTE"
+        env:
+          TEXTE: ${{ inputs.texte }}
+          LEMONDE_COOKIE: ${{ secrets.LEMONDE_COOKIE }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          KINDLE_EMAIL: ${{ secrets.KINDLE_EMAIL }}

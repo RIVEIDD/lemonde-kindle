@@ -1,0 +1,5 @@
+requests==2.34.2
+beautifulsoup4==4.15.0
+lxml==6.1.3
+EbookLib==0.20
+trafilatura==2.3.1
