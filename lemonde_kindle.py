@@ -200,7 +200,8 @@ def fetch_article(url: str, page: str | None = None) -> tuple[Article, requests.
             print("En-têtes :", ", ".join(sorted(resp.headers.keys())), flush=True)
             title = BeautifulSoup(resp.text, "lxml").title
             print(f"Titre : {title.get_text(strip=True) if title else '—'} ({len(resp.text)} caractères)", flush=True)
-            print("Début :", re.sub(r"\s+", " ", resp.text[:600]), flush=True)
+            text = BeautifulSoup(resp.text, "lxml").body
+            print("Texte :", text.get_text(" ", strip=True)[:800] if text else resp.text[:600], flush=True)
         # Le Monde répond 402 sur un article abonné vu sans session valide, mais renvoie
         # quand même la page tronquée : on laisse l'analyse expliquer le problème.
         if resp.status_code != 402:
