@@ -194,7 +194,13 @@ def fetch_article(url: str, page: str | None = None) -> tuple[Article, requests.
     if page is None:
         resp = session.get(url, timeout=30)
         has_cookie = "Cookie" in session.headers
-        print(f"HTTP {resp.status_code} — cookie Le Monde {'présent' if has_cookie else 'absent'}")
+        print(f"HTTP {resp.status_code} — cookie Le Monde {'présent' if has_cookie else 'absent'}", flush=True)
+        if resp.status_code >= 400:
+            # Aide au diagnostic : quelle protection a répondu, et avec quelle page.
+            print("En-têtes :", ", ".join(sorted(resp.headers.keys())), flush=True)
+            title = BeautifulSoup(resp.text, "lxml").title
+            print(f"Titre : {title.get_text(strip=True) if title else '—'} ({len(resp.text)} caractères)", flush=True)
+            print("Début :", re.sub(r"\s+", " ", resp.text[:600]), flush=True)
         # Le Monde répond 402 sur un article abonné vu sans session valide, mais renvoie
         # quand même la page tronquée : on laisse l'analyse expliquer le problème.
         if resp.status_code != 402:
