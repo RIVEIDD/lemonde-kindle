@@ -77,6 +77,8 @@ def session_for(url: str) -> requests.Session:
     session = requests.Session()
     session.headers.update({"User-Agent": USER_AGENT, "Accept-Language": "fr-FR,fr;q=0.9"})
     cookie = os.environ.get("LEMONDE_COOKIE", "").strip()
+    # Tolère un copier-coller qui inclut le nom de l'en-tête ou des retours à la ligne.
+    cookie = re.sub(r"^cookie\s*:\s*", "", cookie, flags=re.IGNORECASE).replace("\n", "").replace("\r", "")
     if cookie and urlparse(url).hostname.endswith("lemonde.fr"):
         session.headers["Cookie"] = cookie
     return session
@@ -191,7 +193,12 @@ def fetch_article(url: str, page: str | None = None) -> tuple[Article, requests.
     session = session_for(url)
     if page is None:
         resp = session.get(url, timeout=30)
-        resp.raise_for_status()
+        has_cookie = "Cookie" in session.headers
+        print(f"HTTP {resp.status_code} — cookie Le Monde {'présent' if has_cookie else 'absent'}")
+        # Le Monde répond 402 sur un article abonné vu sans session valide, mais renvoie
+        # quand même la page tronquée : on laisse l'analyse expliquer le problème.
+        if resp.status_code != 402:
+            resp.raise_for_status()
         page = resp.text
     host = urlparse(url).hostname or ""
     if host.endswith("lemonde.fr"):
