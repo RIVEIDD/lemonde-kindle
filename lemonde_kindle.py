@@ -235,7 +235,10 @@ def build_epub(article: Article, session: requests.Session, path: str) -> str:
             try:
                 resp = session.get(article.images[name.group(1)], timeout=30)
                 resp.raise_for_status()
-                book.add_item(epub.EpubItem(file_name=name.group(1), media_type="image/jpeg", content=resp.content))
+                media_type = resp.headers.get("Content-Type", "").split(";")[0].strip()
+                if media_type not in ("image/jpeg", "image/png", "image/gif"):
+                    continue  # format (webp, avif…) refusé par Amazon : on saute l'image
+                book.add_item(epub.EpubItem(file_name=name.group(1), media_type=media_type, content=resp.content))
             except requests.RequestException:
                 continue  # une image manquante ne doit pas bloquer l'envoi
         blocks.append(block)
