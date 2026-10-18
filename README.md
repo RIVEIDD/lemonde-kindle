@@ -45,7 +45,7 @@ Installe **HTTP Shortcuts** (Play Store ou F‑Droid, gratuit et open source).
 2. Nouveau raccourci → *Requête HTTP* :
    - Nom : `Kindle`
    - Méthode : `POST`
-   - URL : `https://api.github.com/repos/<ton-compte>/<ce-dépôt>/actions/workflows/kindle.yml/dispatches`
+   - URL : `https://api.github.com/repos/RIVEIDD/lemonde-kindle/actions/workflows/kindle.yml/dispatches`
    - En‑têtes : `Authorization: Bearer <jeton de l'étape 5>` et `Accept: application/vnd.github+json`
    - Corps (JSON) : `{"ref": "main", "inputs": {"texte": "{url}"}}` où `{url}` est une variable texte `url` (crée‑la, vide).
    - **Scripting → Avant l'exécution** :
