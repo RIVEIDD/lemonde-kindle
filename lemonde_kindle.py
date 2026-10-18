@@ -172,8 +172,11 @@ def parse_lemonde(soup: BeautifulSoup, url: str) -> Article:
 
 
 def parse_generic(page: str, url: str) -> Article:
-    """Autres sites : extraction générique avec trafilatura."""
-    import trafilatura
+    """Autres sites : extraction générique avec trafilatura (facultatif)."""
+    try:
+        import trafilatura
+    except ImportError:
+        raise ArticleError("Seul Le Monde est pris en charge sans le module trafilatura.") from None
 
     data = trafilatura.bare_extraction(page, url=url, include_images=False, with_metadata=True)
     if not data or not getattr(data, "text", None):
