@@ -122,7 +122,10 @@ def figure_block(fig: Tag, article: Article) -> str | None:
 
 
 def parse_lemonde(soup: BeautifulSoup, url: str) -> Article:
-    body = soup.select_one("article.article__content")
+    # Article classique : <article class="article__content"> ; format long (« longform ») :
+    # <section class="article__content">. On prend le conteneur qui porte les paragraphes.
+    first = soup.select_one(".article__content p.article__paragraph") or soup.select_one("p.article__paragraph")
+    body = first.find_parent(class_="article__content") or first.parent if first else None
     if body is None:
         raise ArticleError("Structure d'article Le Monde introuvable.")
     article = Article(
@@ -132,13 +135,19 @@ def parse_lemonde(soup: BeautifulSoup, url: str) -> Article:
     )
     author = soup.select_one(".meta__author")
     date = soup.select_one(".meta__date")
-    article.author = author.get_text(" ", strip=True) if author else ""
-    article.date = date.get_text(" ", strip=True) if date else ""
+    article.author = author.get_text(" ", strip=True) if author else meta(soup, "og:article:author")
+    article.date = date.get_text(" ", strip=True) if date else meta(soup, "og:article:published_time")[:10]
+
+    cover = soup.select_one("figure.article__cover-figure")
+    if cover is not None and not body.find(lambda tag: tag is cover):
+        block = figure_block(cover, article)
+        if block:
+            article.blocks.append(block)
 
     block_tags = ["p", "h2", "h3", "blockquote", "figure", "ul", "ol"]
     for node in body.find_all(block_tags):
         # Un bloc imbriqué dans un autre (légende, citation…) est rendu par son parent.
-        if node.find_parent(block_tags):
+        if node.find_parent(block_tags) or node.find_parent(class_=["catcher", "dfp-slot"]) or node.find_parent("aside"):
             continue
         classes = node.get("class") or []
         if node.name == "p" and "article__paragraph" not in classes:
@@ -164,7 +173,7 @@ def parse_lemonde(soup: BeautifulSoup, url: str) -> Article:
     if locked and still_paywalled and paragraphs <= 4:
         raise ArticleError(
             "Article abonné tronqué : le cookie Le Monde est absent ou expiré. "
-            "Recopie un cookie frais dans le secret LEMONDE_COOKIE."
+            "Recopie un cookie frais dans ~/.config/lemonde-kindle.env (LEMONDE_COOKIE)."
         )
     if paragraphs == 0:
         raise ArticleError("Aucun paragraphe trouvé dans l'article.")
