@@ -1,6 +1,6 @@
 # Le Monde → Kindle
 
-Partager un article depuis l'appli Android Le Monde, et le retrouver quelques instants plus tard sur la Kindle, en EPUB lisible, texte complet (abonné).
+Partager un article depuis l'appli Android Le Monde (ou un numéro du Monde diplomatique, voir plus bas), et le retrouver quelques instants plus tard sur la Kindle, en EPUB lisible, texte complet (abonné).
 
 Le script tourne **sur le téléphone, dans Termux** : Le Monde bloque les serveurs (GitHub Actions, hébergeurs cloud) comme « trafic automatisé », alors qu'une connexion de téléphone passe comme celle d'un lecteur normal.
 
@@ -32,6 +32,18 @@ Fonctionnement : Partager → Termux → le script télécharge l'article avec t
 - **Supprimer après lecture** : sur la Kindle, appui long sur l'article → **Supprimer ce téléchargement** (et **Supprimer définitivement** si ta Kindle le propose, pour le retirer aussi du cloud ; sinon amazon.fr → Gérer votre contenu → Documents).
 - **« Article abonné tronqué… cookie absent ou expiré »** : refais l'étape 3 et remplace `LEMONDE_COOKIE` dans `~/.config/lemonde-kindle.env` (garde les guillemets ou l'échappement autour de la valeur).
 - **Mettre à jour le script** : dans Termux, `cd ~/lemonde-kindle && git pull`.
+
+## Le Monde diplomatique
+
+Le *Diplo* propose à ses abonnés chaque numéro complet en **EPUB** (avec PDF, azw3 et mobi) : c'est la meilleure façon de le lire sur la Kindle, avec sommaire et mise en page soignée. L'appli Android du Diplo garde ses numéros pour elle ; on passe donc par le site.
+
+- **Numéro du mois, à la main** (aucun cookie nécessaire) : dans le navigateur du téléphone, connecte‑toi sur monde-diplomatique.fr, ouvre **Numéro du mois → Télécharger ce numéro → epub**. Puis, depuis la notification de téléchargement ou l'appli Fichiers, **Partager → Termux** : le fichier part tel quel sur la Kindle. (Partager → Kindle, avec l'appli Kindle installée, marche aussi.)
+- **Numéro du mois, en un geste** : avec `DIPLO_COOKIE` rempli, partage vers Termux la page du numéro (`https://www.monde-diplomatique.fr/2026/10/`) : le script télécharge l'EPUB des abonnés et l'envoie.
+- **Un article seul** (archives, articles en ligne) : partage son lien vers Termux, comme pour Le Monde. Il faut `DIPLO_COOKIE`.
+
+**Cookie Diplo** : même méthode que pour Le Monde, sur un article de monde-diplomatique.fr où tu es connecté (F12 → Réseau → F5 → première requête → `Cookie`). Ajoute‑le dans `~/.config/lemonde-kindle.env` sur une ligne `DIPLO_COOKIE='…'`, ou relance `bash ~/lemonde-kindle/termux/install.sh` qui le demande.
+
+Gmail limite les pièces jointes à 25 Mo ; au‑delà (PDF du numéro, par exemple), le script le dit et il faut passer par Partager → Kindle.
 
 ## Tester sur un ordinateur
 ```bash

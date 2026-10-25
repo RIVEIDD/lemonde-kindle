@@ -1,12 +1,15 @@
-"""Envoie un article du Monde (ou d'un autre site) sur une Kindle, en EPUB.
+"""Envoie un article du Monde ou du Monde diplomatique (ou d'un autre site) sur une Kindle, en EPUB.
 
 Usage :
     python lemonde_kindle.py "<texte partagé contenant l'URL>"
+    python lemonde_kindle.py numero.epub                # envoie un EPUB ou un PDF tel quel
+    python lemonde_kindle.py https://www.monde-diplomatique.fr/2026/10/   # numéro complet du Diplo
     python lemonde_kindle.py URL --epub article.epub   # crée l'EPUB sans l'envoyer
     python lemonde_kindle.py URL --html page.html      # utilise une page déjà téléchargée
 
 Variables d'environnement :
     LEMONDE_COOKIE  en-tête Cookie d'une session abonné sur lemonde.fr
+    DIPLO_COOKIE    en-tête Cookie d'une session abonné sur monde-diplomatique.fr
     SMTP_USER       adresse qui envoie (doit être autorisée sur Amazon)
     SMTP_PASSWORD   mot de passe d'application de cette adresse
     KINDLE_EMAIL    adresse @kindle.com de la liseuse
@@ -25,7 +28,7 @@ import sys
 import uuid
 from dataclasses import dataclass, field
 from email.message import EmailMessage
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup, NavigableString, Tag
@@ -73,13 +76,29 @@ def find_url(text: str) -> str:
     return match.group(0).rstrip(").,;»\"'")
 
 
+# Domaine -> variable d'environnement qui porte le cookie abonné de ce site.
+COOKIES = {"monde-diplomatique.fr": "DIPLO_COOKIE", "lemonde.fr": "LEMONDE_COOKIE"}
+MAX_ATTACHMENT = 24 * 1024 * 1024  # Gmail refuse les pièces jointes de plus de 25 Mo
+
+
+def is_diplo(url: str) -> bool:
+    return (urlparse(url).hostname or "").endswith("monde-diplomatique.fr")
+
+
+def cookie_var(url: str) -> str | None:
+    host = urlparse(url).hostname or ""
+    # « monde-diplomatique.fr » se termine aussi par « lemonde.fr » : on teste le Diplo d'abord.
+    return next((var for domain, var in COOKIES.items() if host.endswith(domain)), None)
+
+
 def session_for(url: str) -> requests.Session:
     session = requests.Session()
     session.headers.update({"User-Agent": USER_AGENT, "Accept-Language": "fr-FR,fr;q=0.9"})
-    cookie = os.environ.get("LEMONDE_COOKIE", "").strip()
+    var = cookie_var(url)
+    cookie = os.environ.get(var, "").strip() if var else ""
     # Tolère un copier-coller qui inclut le nom de l'en-tête ou des retours à la ligne.
     cookie = re.sub(r"^cookie\s*:\s*", "", cookie, flags=re.IGNORECASE).replace("\n", "").replace("\r", "")
-    if cookie and urlparse(url).hostname.endswith("lemonde.fr"):
+    if cookie:
         session.headers["Cookie"] = cookie
     return session
 
@@ -180,6 +199,69 @@ def parse_lemonde(soup: BeautifulSoup, url: str) -> Article:
     return article
 
 
+def parse_diplo(soup: BeautifulSoup, url: str) -> Article:
+    """Article du Monde diplomatique (site SPIP) : le texte est dans div.texte."""
+    body = soup.select_one(".contenu-principal div.texte") or soup.select_one("div.texte")
+    if body is None:
+        raise ArticleError("Structure d'article du Monde diplomatique introuvable.")
+    title = soup.select_one("h1.crayon")
+    chapo = soup.select_one(".contenu-principal .chapo")
+    article = Article(
+        url=url,
+        title=title.get_text(" ", strip=True) if title else meta(soup, "og:title"),
+        description=chapo.get_text(" ", strip=True) if chapo else meta(soup, "description"),
+        author=meta(soup, "article:author"),
+        date=meta(soup, "article:published_time")[:10],
+    )
+
+    # Les images sont en chemin relatif à la balise <base> de la page.
+    base = soup.find("base", href=True)
+    base_url = urljoin(url, base["href"]) if base else url
+    block_tags = ["p", "h2", "h3", "h4", "blockquote", "figure", "ul", "ol"]
+    for node in body.find_all(block_tags):
+        if node.find_parent(block_tags) or node.find_parent(class_=["nombremots", "promo_dispo_article"]):
+            continue
+        if node.name == "figure":
+            img = node.find("img")
+            src = img and (img.get("src") or img.get("data-src"))
+            block = None
+            if src:
+                name = f"img{len(article.images) + 1}.jpg"
+                article.images[name] = urljoin(base_url, src)
+                caption = node.find("figcaption")
+                text = caption.get_text(" ", strip=True) if caption else ""
+                cap = f"<figcaption>{html.escape(text, quote=False)}</figcaption>" if text else ""
+                block = f'<figure><img src="{name}" alt=""/>{cap}</figure>'
+        elif node.name in ("h2", "h3", "h4"):
+            block = f"<h2>{inline_html(node)}</h2>"
+        elif node.name == "blockquote":
+            block = f"<blockquote><p>{inline_html(node)}</p></blockquote>"
+        elif node.name in ("ul", "ol"):
+            items = "".join(f"<li>{inline_html(li)}</li>" for li in node.find_all("li"))
+            block = f"<{node.name}>{items}</{node.name}>" if items else None
+        else:
+            text = inline_html(node)
+            block = f"<p>{text}</p>" if text else None
+        if block:
+            article.blocks.append(block)
+
+    # Les notes de bas de page sont à part, après le texte.
+    notes = soup.select_one(".contenu-principal .notes")
+    if notes is not None:
+        article.blocks.append("<h2>Notes</h2>")
+        article.blocks.extend(f"<p>{inline_html(p)}</p>" for p in notes.find_all("p") if inline_html(p))
+
+    principal = soup.select_one(".contenu-principal")
+    if principal is not None and "ferme" in (principal.get("class") or []):
+        raise ArticleError(
+            "Article abonné tronqué : le cookie du Monde diplomatique est absent ou expiré. "
+            "Recopie un cookie frais dans ~/.config/lemonde-kindle.env (DIPLO_COOKIE)."
+        )
+    if not any(b.startswith("<p>") for b in article.blocks):
+        raise ArticleError("Aucun paragraphe trouvé dans l'article.")
+    return article
+
+
 def parse_generic(page: str, url: str) -> Article:
     """Autres sites : extraction générique avec trafilatura (facultatif)."""
     try:
@@ -206,7 +288,7 @@ def fetch_article(url: str, page: str | None = None) -> tuple[Article, requests.
     if page is None:
         resp = session.get(url, timeout=30)
         has_cookie = "Cookie" in session.headers
-        print(f"HTTP {resp.status_code} — cookie Le Monde {'présent' if has_cookie else 'absent'}", flush=True)
+        print(f"HTTP {resp.status_code} — cookie abonné {'présent' if has_cookie else 'absent'}", flush=True)
         if resp.status_code >= 400:
             # Aide au diagnostic : quelle protection a répondu, et avec quelle page.
             print("En-têtes :", ", ".join(sorted(resp.headers.keys())), flush=True)
@@ -220,11 +302,48 @@ def fetch_article(url: str, page: str | None = None) -> tuple[Article, requests.
             resp.raise_for_status()
         page = resp.text
     host = urlparse(url).hostname or ""
-    if host.endswith("lemonde.fr"):
+    if is_diplo(url):
+        article = parse_diplo(BeautifulSoup(page, "lxml"), url)
+    elif host.endswith("lemonde.fr"):
         article = parse_lemonde(BeautifulSoup(page, "lxml"), url)
     else:
         article = parse_generic(page, url)
     return article, session
+
+
+def diplo_issue(url: str) -> tuple[str, str] | None:
+    """Reconnaît la page d'un numéro du Diplo (…/2026/10/) et renvoie (année, mois)."""
+    match = re.fullmatch(r"/(?:telechargements/)?(\d{4})/(\d{2})/?", urlparse(url).path)
+    return match.groups() if is_diplo(url) and match else None
+
+
+def download_diplo_issue(year: str, month: str, path: str) -> str:
+    """Télécharge l'EPUB du numéro mensuel proposé aux abonnés sur la page de téléchargement."""
+    page_url = f"https://www.monde-diplomatique.fr/telechargements/{year}/{month}"
+    session = session_for(page_url)
+    if "Cookie" not in session.headers:
+        raise ArticleError("DIPLO_COOKIE manquant dans ~/.config/lemonde-kindle.env.")
+    resp = session.get(page_url, timeout=30)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "lxml")
+    # Lien du bloc « Télécharger ce numéro » ; sans session valide il pointe vers /connexion.
+    link = next(
+        (a for a in soup.select("#telecharger a[href], .format.epub a[href]")
+         if "epub" in (a.get("title", "") + a.get_text() + a["href"]).lower()),
+        None,
+    )
+    if link is None or "/connexion" in link["href"]:
+        raise ArticleError(
+            "Le Monde diplomatique ne reconnaît pas l'abonnement : cookie absent ou expiré "
+            "(DIPLO_COOKIE). Tu peux aussi télécharger l'EPUB dans le navigateur et le partager vers Termux."
+        )
+    resp = session.get(urljoin(page_url, link["href"]), timeout=120)
+    resp.raise_for_status()
+    if not resp.content.startswith(b"PK"):
+        raise ArticleError(f"Le fichier reçu n'est pas un EPUB ({resp.headers.get('Content-Type', '?')}).")
+    with open(path, "wb") as fh:
+        fh.write(resp.content)
+    return path
 
 
 def build_epub(article: Article, session: requests.Session, path: str) -> str:
@@ -232,7 +351,7 @@ def build_epub(article: Article, session: requests.Session, path: str) -> str:
     book.set_identifier(str(uuid.uuid4()))
     book.set_title(article.title)
     book.set_language("fr")
-    book.add_author(article.author.removeprefix("Par ").strip() or "Le Monde")
+    book.add_author(article.author.removeprefix("Par ").strip() or ("Le Monde diplomatique" if is_diplo(article.url) else "Le Monde"))
 
     css = epub.EpubItem(uid="style", file_name="style.css", media_type="text/css", content=CSS)
     book.add_item(css)
@@ -276,7 +395,12 @@ def safe_filename(title: str) -> str:
     return (re.sub(r"\s+", " ", name)[:80] or "article") + ".epub"
 
 
-def send_to_kindle(path: str, title: str) -> None:
+def send_to_kindle(path: str, title: str, filename: str | None = None) -> None:
+    if os.path.getsize(path) > MAX_ATTACHMENT:
+        raise ArticleError(
+            f"Fichier trop gros pour Gmail ({os.path.getsize(path) // 2**20} Mo, 25 Mo au plus). "
+            "Partage-le plutôt vers l'appli Kindle (Partager → Kindle)."
+        )
     user = os.environ["SMTP_USER"].strip()
     # Le mot de passe d'application Google s'affiche par groupes de 4 : les espaces ne comptent pas.
     password = re.sub(r"\s+", "", os.environ["SMTP_PASSWORD"])
@@ -285,8 +409,10 @@ def send_to_kindle(path: str, title: str) -> None:
     msg["To"] = os.environ["KINDLE_EMAIL"].strip()
     msg["Subject"] = title
     msg.set_content("Article envoyé par lemonde_kindle.")
+    filename = filename or safe_filename(title)
+    subtype = "pdf" if filename.lower().endswith(".pdf") else "epub+zip"
     with open(path, "rb") as fh:
-        msg.add_attachment(fh.read(), maintype="application", subtype="epub+zip", filename=safe_filename(title))
+        msg.add_attachment(fh.read(), maintype="application", subtype=subtype, filename=filename)
     host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
     port = int(os.environ.get("SMTP_PORT", "465"))
     try:
@@ -312,13 +438,29 @@ def send_to_kindle(path: str, title: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("texte", help="URL de l'article, ou texte partagé qui la contient")
+    parser.add_argument("texte", help="URL de l'article, texte partagé qui la contient, ou fichier partagé")
     parser.add_argument("--epub", help="écrit l'EPUB à ce chemin sans l'envoyer")
     parser.add_argument("--html", help="lit la page depuis ce fichier au lieu de la télécharger")
     args = parser.parse_args()
 
     try:
-        url = find_url(args.texte)
+        texte = args.texte
+        if os.path.isfile(texte):
+            with open(texte, "rb") as fh:
+                head = fh.read(4)
+            if head.startswith(b"PK") or head == b"%PDF":
+                # Un EPUB ou un PDF partagé (numéro du Diplo téléchargé…) part tel quel.
+                send_document(texte)
+                return 0
+            texte = open(texte, encoding="utf-8", errors="replace").read()
+        url = find_url(texte)
+        issue = diplo_issue(url)
+        if issue:
+            path = download_diplo_issue(*issue, args.epub or f"Le-Monde-diplomatique-{issue[0]}-{issue[1]}.epub")
+            print(f"Numéro téléchargé : {path}")
+            if not args.epub:
+                send_document(path, f"Le Monde diplomatique — {issue[1]}/{issue[0]}")
+            return 0
         page = open(args.html, encoding="utf-8").read() if args.html else None
         article, session = fetch_article(url, page)
         path = args.epub or "article.epub"
@@ -331,6 +473,17 @@ def main() -> int:
         print(f"Erreur : {exc}", file=sys.stderr)
         return 1
     return 0
+
+
+def send_document(path: str, title: str | None = None) -> None:
+    """Envoie un EPUB ou un PDF déjà prêt, sous son nom de fichier."""
+    name = os.path.basename(path)
+    if not name.lower().endswith((".epub", ".pdf")):
+        with open(path, "rb") as fh:
+            name += ".pdf" if fh.read(4) == b"%PDF" else ".epub"
+    title = title or os.path.splitext(name)[0].replace("-", " ").replace("_", " ")
+    send_to_kindle(path, title, name)
+    print(f"{name} envoyé à {os.environ['KINDLE_EMAIL']}")
 
 
 if __name__ == "__main__":
